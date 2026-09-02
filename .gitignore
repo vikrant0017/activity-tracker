@@ -8,3 +8,19 @@ wheels/
 
 # Virtual environments
 .venv
+
+# sqlite dbs
+*.db
+
+# Frontend assets generated for Python wheel builds
+/src/activity_tracker/web/static/*
+!/src/activity_tracker/web/static/.gitkeep
+
+# Symlink to omarchy qmls
+qml-imports
+
+# Frontend development artifacts
+/frontend/node_modules/
+/frontend/dist/
+
+# hyprdocs

@@ -1,0 +1,9 @@
+{
+  "lsp": {
+    "qmljs": {
+      "binary": {
+        "arguments": ["-I", "qml-imports"]
+      }
+    }
+  }
+}

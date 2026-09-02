@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "vikrant.activity-tracker",
+  "name": "Activity Tracker",
+  "version": "0.2.0",
+  "author": "Vikrant Pradhan",
+  "description": "Compact active-time bar button with a popup of the three most-used applications.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Activity Tracker",
+    "description": "Click to view active time and top applications; open the dashboard from the popup.",
+    "category": "Productivity",
+    "allowMultiple": false
+  }
+}

@@ -1,7 +1,7 @@
 [project]
-name = "2026-09-02-actvity-tracker"
+name = "activity-tracker"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local Hyprland active-window activity tracker with dashboard and Omarchy widget integration"
 readme = "README.md"
 authors = [
     { name = "Vikrant Pradhan", email = "pradhan.vikrant@hotmail.com" }
@@ -10,7 +10,11 @@ requires-python = ">=3.13"
 dependencies = []
 
 [project.scripts]
-2026-09-02-actvity-tracker = "2026_09_02_actvity_tracker:main"
+activity-tracker = "activity_tracker.main:main"
+activity-tracker-stats = "activity_tracker.stats:main"
+activity-tracker-dashboard = "activity_tracker.dashboard:main"
+activity-tracker-bar-stats = "activity_tracker.bar_stats:main"
+activity-tracker-open-dashboard = "activity_tracker.dashboard:open_dashboard_main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
