@@ -12,6 +12,59 @@ A local-first Linux activity tracker for Hyprland. It records `activewindow` eve
 - Node.js 22+ and npm for dashboard development or release builds
 - Optional: Omarchy for the bar-widget integration
 
+## Install
+
+### Omarchy widget (recommended for Omarchy users)
+
+Install the widget through Omarchy's plugin manager:
+
+```sh
+omarchy plugin add \
+  https://github.com/vikrant0017/activity-tracker-omarchy-plugin.git \
+  --enable
+```
+
+Open the widget popup and select **Open dashboard**. On first use, it downloads the checksum-verified wheel from this repository's GitHub Release, installs it with `uv tool`, enables the collector user service, and opens the local dashboard.
+
+This path requires `uv` and `curl` on `PATH`. Activity data remains local in `~/.local/share/activity-tracker/`.
+
+### Manual GitHub Release installation
+
+Install the released wheel directly with `uv`:
+
+```sh
+uv tool install --from \
+  https://github.com/vikrant0017/activity-tracker/releases/download/v0.1.0/activity_tracker-0.1.0-py3-none-any.whl \
+  activity-tracker
+```
+
+Enable reliable background collection in your active Hyprland session:
+
+```sh
+systemctl --user import-environment XDG_RUNTIME_DIR HYPRLAND_INSTANCE_SIGNATURE
+activity-tracker-service install
+```
+
+Open the local dashboard:
+
+```sh
+activity-tracker-open-dashboard
+```
+
+Check the installation at any time:
+
+```sh
+activity-tracker-service status
+activity-tracker-stats
+```
+
+To remove the installed runtime and service:
+
+```sh
+activity-tracker-service uninstall
+uv tool uninstall activity-tracker
+```
+
 ## Repository layout
 
 ```text
