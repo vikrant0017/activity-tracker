@@ -9,7 +9,7 @@ import threading
 import time
 import tomllib
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
@@ -18,6 +18,7 @@ from typing import Any, cast
 from urllib.parse import urlparse
 
 from activity_tracker.bar_stats import bar_stats_payload
+from activity_tracker.config import load_settings
 from activity_tracker.database import SQLiteEventStore
 from activity_tracker.debug import debug
 from activity_tracker.main import listen
@@ -157,9 +158,18 @@ def ranked_visits(
     ]
 
 
-def dashboard_payload(store: SQLiteEventStore, *, now: datetime | None = None) -> dict[str, Any]:
+def dashboard_payload(
+    store: SQLiteEventStore,
+    *,
+    now: datetime | None = None,
+    idle_after: timedelta | None = None,
+) -> dict[str, Any]:
     records = store.read_events()
-    sessions = focus_sessions(records, now=now)
+    sessions = focus_sessions(
+        records,
+        now=now,
+        idle_after=idle_after or load_settings().idle_after,
+    )
     active_seconds = sum((session.duration.total_seconds() for session in sessions), 0.0)
     idle_seconds = sum((session.idle_duration.total_seconds() for session in sessions), 0.0)
     context_switch_count = sum(
@@ -403,12 +413,18 @@ def collect_events() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Serve the activity-tracker dashboard.')
-    parser.add_argument('--host', default='127.0.0.1', help='bind address (default: 127.0.0.1)')
-    parser.add_argument('--port', type=int, default=8765, help='TCP port (default: 8765)')
+    settings = load_settings()
+    parser.add_argument('--host', help='bind address (defaults to dashboard.host)')
+    parser.add_argument('--port', type=int, help='TCP port (defaults to dashboard.port)')
+    parser.add_argument(
+        '--collector',
+        action='store_true',
+        help='also run an in-process collector (development only; use activity-tracker-service normally)',
+    )
     parser.add_argument(
         '--no-collector',
         action='store_true',
-        help='only show existing records; do not connect to the Hyprland event socket',
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         '--production',
@@ -417,16 +433,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.no_collector:
+    if args.collector and not args.no_collector:
         threading.Thread(target=collect_events, daemon=True).start()
 
+    host = args.host or settings.dashboard_host
+    port = args.port or settings.dashboard_port
     server = DashboardServer(
-        (args.host, args.port),
+        (host, port),
         DashboardHandler,
         serve_frontend=args.production,
     )
     debug(
-        f'Dashboard API available at http://{args.host}:{args.port}'
+        f'Dashboard API available at http://{host}:{port}'
         + (' (serving production frontend)' if args.production else '')
     )
     try:

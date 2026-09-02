@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from activity_tracker.config import load_settings
 from activity_tracker.database import EventRecord, SQLiteEventStore
 
 DEFAULT_IDLE_AFTER = timedelta(minutes=5)
@@ -121,9 +122,9 @@ def main() -> None:
     parser.add_argument(
         '--idle-after',
         type=positive_seconds,
-        default=DEFAULT_IDLE_AFTER.total_seconds(),
+        default=load_settings().idle_after.total_seconds(),
         metavar='SECONDS',
-        help='count time after this unfocused-event gap as idle (default: 300)',
+        help='count time after this unfocused-event gap as idle (defaults to activity.idle_after_seconds)',
     )
     args = parser.parse_args()
 

@@ -2,13 +2,14 @@ import json
 from collections import defaultdict
 from datetime import timedelta
 
+from activity_tracker.config import load_settings
 from activity_tracker.database import SQLiteEventStore
 from activity_tracker.stats import focus_sessions, format_duration
 
 
 def bar_stats_payload() -> dict[str, object]:
     with SQLiteEventStore() as store:
-        sessions = focus_sessions(store.read_events())
+        sessions = focus_sessions(store.read_events(), idle_after=load_settings().idle_after)
 
     active_seconds = sum(session.duration.total_seconds() for session in sessions)
     app_totals = defaultdict(float)

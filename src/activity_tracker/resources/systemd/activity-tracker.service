@@ -1,0 +1,13 @@
+[Unit]
+Description=Activity Tracker Hyprland collector
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@COLLECTOR_COMMAND@
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

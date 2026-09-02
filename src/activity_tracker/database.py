@@ -9,6 +9,7 @@ from typing import Protocol, Self
 from activity_tracker.paths import database_path as default_database_path
 
 ACTIVE_WINDOW_EVENT = 'activewindow'
+SCHEMA_VERSION = 2
 PREDEFINED_CATEGORY_NAMES = (
     'browser',
     'code editor',
@@ -113,54 +114,56 @@ class SQLiteEventStore:
         self.connection.close()
 
     def _create_schema(self) -> None:
-        """Create current tables and remove legacy non-focus event records."""
+        """Apply ordered SQLite migrations and record the resulting schema version."""
+        version = self.connection.execute('PRAGMA user_version').fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(
+                f'database schema version {version} is newer than supported version {SCHEMA_VERSION}'
+            )
         with self.connection:
-            self.connection.execute('''
-                CREATE TABLE IF NOT EXISTS events (
-                    id INTEGER PRIMARY KEY,
-                    recorded_at TEXT NOT NULL,
-                    event TEXT NOT NULL,
-                    data TEXT NOT NULL,
-                    app TEXT,
-                    title TEXT
+            if version < 1:
+                self.connection.execute('''
+                    CREATE TABLE IF NOT EXISTS events (
+                        id INTEGER PRIMARY KEY,
+                        recorded_at TEXT NOT NULL,
+                        event TEXT NOT NULL,
+                        data TEXT NOT NULL,
+                        app TEXT,
+                        title TEXT
+                    )
+                ''')
+                self.connection.execute('CREATE INDEX IF NOT EXISTS events_recorded_at_idx ON events(recorded_at)')
+            if version < 2:
+                # Pre-release collectors recorded every Hyprland socket event.
+                # Keep only the focus data this application can interpret.
+                self.connection.execute('DELETE FROM events WHERE event <> ?', (ACTIVE_WINDOW_EVENT,))
+                self.connection.execute('''
+                    CREATE TABLE IF NOT EXISTS categories (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL COLLATE NOCASE UNIQUE
+                    )
+                ''')
+                self.connection.executemany(
+                    'INSERT OR IGNORE INTO categories (name) VALUES (?)',
+                    ((name,) for name in PREDEFINED_CATEGORY_NAMES),
                 )
-            ''')
-            # Older collectors stored all socket2 events. Retain only the data
-            # that represents focus sessions before exposing the new schema.
-            self.connection.execute(
-                'DELETE FROM events WHERE event <> ?', (ACTIVE_WINDOW_EVENT,)
-            )
-            self.connection.execute(
-                'CREATE INDEX IF NOT EXISTS events_recorded_at_idx ON events(recorded_at)'
-            )
-            self.connection.execute('''
-                CREATE TABLE IF NOT EXISTS categories (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL COLLATE NOCASE UNIQUE
-                )
-            ''')
-            self.connection.executemany(
-                'INSERT OR IGNORE INTO categories (name) VALUES (?)',
-                ((name,) for name in PREDEFINED_CATEGORY_NAMES),
-            )
-            self.connection.execute('''
-                CREATE TABLE IF NOT EXISTS category_rules (
-                    id INTEGER PRIMARY KEY,
-                    app TEXT NOT NULL,
-                    title_substring TEXT NOT NULL DEFAULT '',
-                    UNIQUE(app, title_substring)
-                )
-            ''')
-            self.connection.execute('''
-                CREATE TABLE IF NOT EXISTS category_rule_categories (
-                    rule_id INTEGER NOT NULL REFERENCES category_rules(id) ON DELETE CASCADE,
-                    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
-                    PRIMARY KEY (rule_id, category_id)
-                )
-            ''')
-            self.connection.execute(
-                'CREATE INDEX IF NOT EXISTS category_rules_app_idx ON category_rules(app)'
-            )
+                self.connection.execute('''
+                    CREATE TABLE IF NOT EXISTS category_rules (
+                        id INTEGER PRIMARY KEY,
+                        app TEXT NOT NULL,
+                        title_substring TEXT NOT NULL DEFAULT '',
+                        UNIQUE(app, title_substring)
+                    )
+                ''')
+                self.connection.execute('''
+                    CREATE TABLE IF NOT EXISTS category_rule_categories (
+                        rule_id INTEGER NOT NULL REFERENCES category_rules(id) ON DELETE CASCADE,
+                        category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+                        PRIMARY KEY (rule_id, category_id)
+                    )
+                ''')
+                self.connection.execute('CREATE INDEX IF NOT EXISTS category_rules_app_idx ON category_rules(app)')
+            self.connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
 
     def write_event(
         self,
