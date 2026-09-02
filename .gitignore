@@ -22,7 +22,6 @@ qml-imports
 # Development-only XDG state and frontend artifacts
 /.dev-data/
 /.dev-config/
-/plugin-release/
 /frontend/node_modules/
 /frontend/dist/
 
