@@ -1080,32 +1080,28 @@ function App() {
   >("connecting")
   useEffect(() => {
     const controller = new AbortController()
-    fetch("/api/dashboard", { signal: controller.signal })
-      .then((response) => {
+    const refreshDashboard = async () => {
+      try {
+        const response = await fetch("/api/dashboard", {
+          signal: controller.signal,
+        })
         if (!response.ok) throw new Error("Unable to load dashboard")
-        return response.json() as Promise<Dashboard>
-      })
-      .then((nextDashboard) => {
+        const nextDashboard = (await response.json()) as Dashboard
         applyOmarchyTheme(nextDashboard.theme)
         setDashboard(nextDashboard)
-      })
-      .catch((error: unknown) => {
-        if (error instanceof Error && error.name !== "AbortError")
+        setConnection("live")
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name !== "AbortError") {
           setConnection("offline")
-      })
-    const stream = new EventSource("/events")
-    stream.addEventListener("snapshot", (event) => {
-      const nextDashboard = JSON.parse(
-        (event as MessageEvent<string>).data
-      ) as Dashboard
-      applyOmarchyTheme(nextDashboard.theme)
-      setDashboard(nextDashboard)
-      setConnection("live")
-    })
-    stream.onerror = () => setConnection("offline")
+        }
+      }
+    }
+
+    void refreshDashboard()
+    const interval = window.setInterval(() => void refreshDashboard(), 1_000)
     return () => {
       controller.abort()
-      stream.close()
+      window.clearInterval(interval)
     }
   }, [])
   async function request(

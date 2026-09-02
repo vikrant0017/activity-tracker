@@ -1,6 +1,6 @@
 [project]
 name = "activity-tracker"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local Hyprland active-window activity tracker with dashboard and Omarchy widget integration"
 readme = "README.md"
 authors = [
