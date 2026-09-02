@@ -42,22 +42,41 @@ def install() -> Path:
 
 
 def uninstall() -> None:
-    systemctl('disable', '--now', SERVICE_NAME)
     path = service_path()
-    if path.exists():
-        path.unlink()
+    if not path.exists():
+        return
+    systemctl('disable', '--now', SERVICE_NAME)
+    path.unlink()
     systemctl('daemon-reload')
+
+
+def require_installed() -> None:
+    if not service_path().exists():
+        raise RuntimeError(
+            'Activity Tracker service is not installed. '
+            'Run `activity-tracker-service install` first.'
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Manage the Activity Tracker systemd user service.')
     parser.add_argument('command', choices=('install', 'uninstall', 'start', 'stop', 'restart', 'status', 'path'))
     args = parser.parse_args()
-    if args.command == 'install':
-        print(install())
-    elif args.command == 'uninstall':
-        uninstall()
-    elif args.command == 'path':
-        print(service_path())
-    else:
-        systemctl(args.command, SERVICE_NAME)
+    try:
+        if args.command == 'install':
+            print(install())
+        elif args.command == 'uninstall':
+            uninstall()
+        elif args.command == 'path':
+            print(service_path())
+        else:
+            require_installed()
+            systemctl(args.command, SERVICE_NAME)
+    except RuntimeError as error:
+        parser.exit(1, f'error: {error}\n')
+    except subprocess.CalledProcessError as error:
+        parser.exit(
+            error.returncode,
+            'error: systemd could not complete the request. '
+            f'Inspect with `journalctl --user -u {SERVICE_NAME}`.\n',
+        )

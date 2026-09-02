@@ -34,7 +34,7 @@ Install the released wheel directly with `uv`:
 
 ```sh
 uv tool install --from \
-  https://github.com/vikrant0017/activity-tracker/releases/download/v0.1.0/activity_tracker-0.1.0-py3-none-any.whl \
+  https://github.com/vikrant0017/activity-tracker/releases/download/v0.1.1/activity_tracker-0.1.1-py3-none-any.whl \
   activity-tracker
 ```
 
@@ -51,7 +51,7 @@ Open the local dashboard:
 activity-tracker-open-dashboard
 ```
 
-Check the installation at any time:
+After installing the service, check the installation at any time:
 
 ```sh
 activity-tracker-service status
