@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react"
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
 import {
   ActivityIcon,
-  ChartNoAxesCombinedIcon,
   ClipboardListIcon,
   Clock3Icon,
   FolderCogIcon,
@@ -15,7 +14,7 @@ import {
   TimerResetIcon,
   Trash2Icon,
 } from "lucide-react"
-import { Label, Pie, PieChart } from "recharts"
+import { Bar, BarChart, Label, Pie, PieChart, XAxis, YAxis } from "recharts"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -64,9 +63,9 @@ import {
   ComboboxList,
   ComboboxValue,
 } from "@/components/ui/combobox"
-
-
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+
+
 import {
   Sidebar,
   SidebarContent,
@@ -93,7 +92,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 
-type Page = "overview" | "focus" | "rules" | "activity"
+type Page = "daily" | "focus" | "rules" | "activity"
 type Session = { label: string; duration_seconds: number }
 type Visit = { label: string; visit_count: number }
 type Category = { id: number; name: string }
@@ -110,8 +109,20 @@ type EventRecord = {
   data: string | null
 }
 type OmarchyTheme = { mode: "dark" | "light"; tokens: Record<string, string> }
+type TimelineSegment = {
+  app: string
+  title: string
+  started_at: string
+  ended_at: string
+  start_minute: number
+  end_minute: number
+  duration_seconds: number
+  categories: Category[]
+}
 type Dashboard = {
   theme?: OmarchyTheme
+  date: string
+  is_today: boolean
   kpis: {
     active_seconds: number
     idle_seconds: number
@@ -120,6 +131,8 @@ type Dashboard = {
   }
   top_sessions: { app: Session[]; app_title: Session[] }
   top_visits: { app: Visit[]; app_title: Visit[] }
+  hourly_activity: Array<{ hour: number; active_seconds: number }>
+  timeline: TimelineSegment[]
   category_totals: Array<Category & { duration_seconds: number }>
   categories: Category[]
   category_rules: CategoryRule[]
@@ -128,23 +141,19 @@ type Dashboard = {
 }
 
 const navigation = [
-  { id: "overview" as const, label: "Overview", icon: LayoutDashboardIcon },
-  {
-    id: "focus" as const,
-    label: "Focus analysis",
-    icon: ChartNoAxesCombinedIcon,
-  },
+  { id: "daily" as const, label: "Daily analytics", icon: LayoutDashboardIcon },
   { id: "rules" as const, label: "Category rules", icon: FolderCogIcon },
   { id: "activity" as const, label: "Activity log", icon: ClipboardListIcon },
 ]
-const pieColors = [
+const chartColors = [
   "var(--chart-1)",
   "var(--chart-2)",
   "var(--chart-3)",
   "var(--chart-4)",
   "var(--chart-5)",
 ]
-const chartConfig = { duration: { label: "Active time" } } satisfies ChartConfig
+const pieColors = chartColors
+const chartConfig = { active: { label: "Active time" } } satisfies ChartConfig
 
 function applyOmarchyTheme(theme: OmarchyTheme | undefined) {
   if (!theme) return
@@ -170,6 +179,23 @@ const formatDate = (value: string) =>
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value))
+const formatDay = (value: string) =>
+  new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(
+    new Date(`${value}T12:00:00`)
+  )
+const localDay = () => {
+  const today = new Date()
+  const month = String(today.getMonth() + 1).padStart(2, "0")
+  const day = String(today.getDate()).padStart(2, "0")
+  return `${today.getFullYear()}-${month}-${day}`
+}
+const shiftDay = (value: string, amount: number) => {
+  const date = new Date(`${value}T12:00:00`)
+  date.setDate(date.getDate() + amount)
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${date.getFullYear()}-${month}-${day}`
+}
 
 function AppSidebar({
   page,
@@ -271,67 +297,44 @@ function Metric({
   )
 }
 
-function FocusShareChart({ sessions }: { sessions: Session[] }) {
-  const chartData = sessions.slice(0, 5).map((session, index) => ({
-    ...session,
-    duration: session.duration_seconds,
-    fill: pieColors[index % pieColors.length],
-  }))
-  const total = chartData.reduce((sum, session) => sum + session.duration, 0)
-  if (!chartData.length)
-    return (
-      <p className="py-20 text-center text-sm text-muted-foreground">
-        No focus sessions to visualise yet.
-      </p>
+function Overview({
+  dashboard,
+  selectedDate,
+  onDateChange,
+}: {
+  dashboard: Dashboard | null
+  selectedDate: string
+  onDateChange: (date: string) => void
+}) {
+  const appColors = useMemo(() => {
+    const apps = [...new Set(dashboard?.timeline.map((segment) => segment.app) ?? [])]
+    return new Map(
+      apps.map((app, index) => [app, chartColors[index % chartColors.length]])
     )
-  return (
-    <ChartContainer
-      config={chartConfig}
-      className="mx-auto min-h-75 w-full max-w-md"
-    >
-      <PieChart accessibilityLayer>
-        <ChartTooltip
-          cursor={false}
-          content={
-            <ChartTooltipContent
-              hideLabel
-              formatter={(value, name) => [
-                formatDuration(Number(value)),
-                String(name),
-              ]}
-            />
-          }
-        />
-        <Pie
-          data={chartData}
-          dataKey="duration"
-          nameKey="label"
-          innerRadius={60}
-          outerRadius={96}
-          stroke="var(--card)"
-          strokeWidth={4}
-          isAnimationActive={false}
-        >
-          <Label
-            value={formatDuration(total)}
-            position="center"
-            className="fill-foreground text-xl font-semibold"
-          />
-        </Pie>
-      </PieChart>
-    </ChartContainer>
-  )
-}
-
-function Overview({ dashboard }: { dashboard: Dashboard | null }) {
+  }, [dashboard?.timeline])
   return (
     <div className="flex flex-col gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>{dashboard ? formatDay(dashboard.date) : "Daily analytics"}</CardTitle>
+          <CardDescription>Review one local calendar day at a time. Today updates live.</CardDescription>
+          <CardAction>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => onDateChange(shiftDay(selectedDate, -1))}>Previous</Button>
+              <Button variant="outline" size="sm" onClick={() => onDateChange(shiftDay(selectedDate, 1))}>Next</Button>
+            </div>
+          </CardAction>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-3">
+          <Input aria-label="Analytics date" className="w-auto" type="date" value={selectedDate} onChange={(event) => onDateChange(event.target.value)} />
+          {!dashboard?.is_today && <Button variant="secondary" size="sm" onClick={() => onDateChange(localDay())}>Today</Button>}
+          {dashboard?.is_today && <Badge>Live</Badge>}
+        </CardContent>
+      </Card>
       {dashboard ? (
         <>
-          <section
-            aria-label="Today’s activity"
-            className="grid gap-3 sm:grid-cols-3"
-          >
+          <section aria-label="Daily activity metrics" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <Metric icon={Clock3Icon} label="Active time" value={formatDuration(dashboard.kpis.active_seconds)} detail="Time in active windows" />
             <Metric
               icon={MonitorDotIcon}
               label="Hypridle idle time"
@@ -351,28 +354,39 @@ function Overview({ dashboard }: { dashboard: Dashboard | null }) {
               detail="Changes between distinct windows"
             />
           </section>
-          <section className="grid gap-6 xl:grid-cols-[minmax(18rem,0.75fr)_minmax(0,1.25fr)]">
+          <section className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)]">
             <Card>
               <CardHeader>
-                <CardTitle>Focus share</CardTitle>
+                <CardTitle>Activity timeline</CardTitle>
                 <CardDescription>
-                  How the top applications divide your active time.
+                  Applications in focus throughout the selected day.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <FocusShareChart sessions={dashboard.top_sessions.app} />
+                <div className="overflow-x-auto">
+                  <div className="min-w-160">
+                    <div className="mb-2 flex justify-between text-xs text-muted-foreground">
+                      {[0, 4, 8, 12, 16, 20, 24].map((hour) => <span key={hour}>{String(hour).padStart(2, "0")}:00</span>)}
+                    </div>
+                    <div className="relative h-18 rounded-md bg-muted" aria-label="Application activity timeline">
+                      {dashboard.timeline.map((segment, index) => {
+                        const left = Math.max(0, Math.min(100, (segment.start_minute / 1440) * 100))
+                        const width = Math.max(0.4, ((segment.end_minute - segment.start_minute) / 1440) * 100)
+                        const detail = [segment.app, segment.title, ...segment.categories.map((category) => category.name)].filter(Boolean).join(" — ")
+                        return <div key={`${segment.started_at}-${index}`} className="absolute top-2 bottom-2 rounded-sm outline-hidden ring-offset-background focus-visible:ring-2" style={{ left: `${left}%`, width: `${width}%`, backgroundColor: appColors.get(segment.app) }} title={`${detail}: ${formatDuration(segment.duration_seconds)}`} tabIndex={0} aria-label={`${detail}, ${formatDuration(segment.duration_seconds)}`} />
+                      })}
+                    </div>
+                  </div>
+                </div>
+                {!dashboard.timeline.length && <p className="py-8 text-center text-sm text-muted-foreground">No active windows were recorded for this day.</p>}
               </CardContent>
             </Card>
             <Card>
               <CardHeader>
-                <CardTitle>What has your attention?</CardTitle>
+                <CardTitle>Top applications</CardTitle>
                 <CardDescription>
-                  Your top applications by active time. Use Focus analysis for
-                  the full breakdown.
+                  Ranked by active time for this day.
                 </CardDescription>
-                <CardAction>
-                  <Badge variant="secondary">Live</Badge>
-                </CardAction>
               </CardHeader>
               <CardContent>
                 <div className="flex flex-col gap-4">
@@ -406,10 +420,35 @@ function Overview({ dashboard }: { dashboard: Dashboard | null }) {
               </CardContent>
             </Card>
           </section>
+          <section className="grid gap-6 xl:grid-cols-2">
+            <Card>
+              <CardHeader><CardTitle>Active time by hour</CardTitle><CardDescription>When activity occurred during the day.</CardDescription></CardHeader>
+              <CardContent>
+                <ChartContainer config={chartConfig} className="h-64 w-full">
+                  <BarChart accessibilityLayer data={dashboard.hourly_activity}>
+                    <XAxis dataKey="hour" tickFormatter={(hour) => `${String(hour).padStart(2, "0")}:00`} />
+                    <YAxis tickFormatter={(seconds) => `${Math.round(Number(seconds) / 60)}m`} width={42} />
+                    <ChartTooltip content={<ChartTooltipContent formatter={(value) => [formatDuration(Number(value)), "Active time"]} />} />
+                    <Bar dataKey="active_seconds" fill="var(--chart-1)" radius={4} />
+                  </BarChart>
+                </ChartContainer>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle>Time by category</CardTitle><CardDescription>Categories can overlap when multiple rules match one activity.</CardDescription></CardHeader>
+              <CardContent>
+                <Table>
+                  <TableCaption>{dashboard.category_totals.length ? "Categorised active time." : "Create category rules to see this breakdown."}</TableCaption>
+                  <TableHeader><TableRow><TableHead>Category</TableHead><TableHead className="text-right">Active time</TableHead></TableRow></TableHeader>
+                  <TableBody>{dashboard.category_totals.slice(0, 8).map((category) => <TableRow key={category.id}><TableCell className="font-medium">{category.name}</TableCell><TableCell className="text-right font-mono tabular-nums">{formatDuration(category.duration_seconds)}</TableCell></TableRow>)}</TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </section>
         </>
       ) : (
-        <section className="grid gap-3 sm:grid-cols-3">
-          {Array.from({ length: 3 }, (_, index) => (
+        <section className="grid gap-3 sm:grid-cols-4">
+          {Array.from({ length: 4 }, (_, index) => (
             <Skeleton key={index} className="h-32" />
           ))}
         </section>
@@ -423,7 +462,7 @@ function ActivityLog({ dashboard }: { dashboard: Dashboard | null }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Recent signals</CardTitle>
+        <CardTitle>Selected day signals</CardTitle>
         <CardDescription>
           The latest window contexts reported by Hyprland.
         </CardDescription>
@@ -1074,36 +1113,37 @@ function Rules({
 
 function App() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
-  const [page, setPage] = useState<Page>("overview")
+  const [page, setPage] = useState<Page>("daily")
+  const [selectedDate, setSelectedDate] = useState(localDay)
   const [connection, setConnection] = useState<
     "connecting" | "live" | "offline"
   >("connecting")
-  useEffect(() => {
-    const controller = new AbortController()
-    const refreshDashboard = async () => {
-      try {
-        const response = await fetch("/api/dashboard", {
-          signal: controller.signal,
-        })
-        if (!response.ok) throw new Error("Unable to load dashboard")
-        const nextDashboard = (await response.json()) as Dashboard
-        applyOmarchyTheme(nextDashboard.theme)
-        setDashboard(nextDashboard)
-        setConnection("live")
-      } catch (error: unknown) {
-        if (error instanceof Error && error.name !== "AbortError") {
-          setConnection("offline")
-        }
+  const refreshDashboard = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const response = await fetch(`/api/dashboard?date=${encodeURIComponent(selectedDate)}`, { signal })
+      if (!response.ok) throw new Error("Unable to load dashboard")
+      const nextDashboard = (await response.json()) as Dashboard
+      applyOmarchyTheme(nextDashboard.theme)
+      setDashboard(nextDashboard)
+      setConnection("live")
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name !== "AbortError") {
+        setConnection("offline")
       }
     }
-
-    void refreshDashboard()
-    const interval = window.setInterval(() => void refreshDashboard(), 1_000)
+  }, [selectedDate])
+  useEffect(() => {
+    const controller = new AbortController()
+    queueMicrotask(() => void refreshDashboard(controller.signal))
+    const isClientToday = selectedDate === localDay()
+    const interval = isClientToday
+      ? window.setInterval(() => void refreshDashboard(), 1_000)
+      : undefined
     return () => {
       controller.abort()
-      window.clearInterval(interval)
+      if (interval !== undefined) window.clearInterval(interval)
     }
-  }, [])
+  }, [refreshDashboard, selectedDate])
   async function request(
     path: string,
     method: "POST" | "PUT" | "DELETE",
@@ -1115,11 +1155,11 @@ function App() {
       body: payload ? JSON.stringify(payload) : undefined,
     })
     if (!response.ok) throw new Error(await response.text())
-    setDashboard((await response.json()) as Dashboard)
+    await refreshDashboard()
   }
   const pageContent =
-    page === "overview" ? (
-      <Overview dashboard={dashboard} />
+    page === "daily" ? (
+      <Overview dashboard={dashboard} selectedDate={selectedDate} onDateChange={setSelectedDate} />
     ) : page === "focus" ? (
       <Focus dashboard={dashboard} />
     ) : page === "activity" ? (
