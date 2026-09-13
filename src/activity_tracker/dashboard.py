@@ -9,20 +9,21 @@ import threading
 import time
 import tomllib
 from collections import defaultdict
-from datetime import datetime, timedelta
+from collections.abc import Sequence
+from datetime import date, datetime, time as datetime_time, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from activity_tracker.bar_stats import bar_stats_payload
 from activity_tracker.config import load_settings
-from activity_tracker.database import SQLiteEventStore
+from activity_tracker.database import IdlePeriod, SQLiteEventStore
 from activity_tracker.debug import debug
 from activity_tracker.main import listen
-from activity_tracker.stats import FocusSession, confirmed_idle_duration, focus_sessions
+from activity_tracker.stats import FocusSession, focus_sessions
 
 FRONTEND_DIST = Path(__file__).with_name('web') / 'static'
 OMARCHY_THEME_COLORS = Path.home() / '.local' / 'state' / 'omarchy' / 'current' / 'theme' / 'colors.toml'
@@ -158,20 +159,116 @@ def ranked_visits(
     ]
 
 
+def _overlap_seconds(
+    started_at: datetime,
+    ended_at: datetime,
+    range_start: datetime,
+    range_end: datetime,
+) -> float:
+    """Return the seconds shared by two half-open time ranges."""
+    return max(0.0, (min(ended_at, range_end) - max(started_at, range_start)).total_seconds())
+
+
+def _daily_sessions(
+    sessions: list[FocusSession],
+    *,
+    range_start: datetime,
+    range_end: datetime,
+) -> list[FocusSession]:
+    """Clip active sessions to a local calendar day, discarding empty slices."""
+    daily_sessions = []
+    for session in sessions:
+        started_at = max(session.started_at, range_start)
+        ended_at = min(session.ended_at, range_end)
+        if ended_at <= started_at:
+            continue
+        daily_sessions.append(
+            FocusSession(
+                app=session.app,
+                title=session.title,
+                started_at=started_at,
+                ended_at=ended_at,
+                duration=ended_at - started_at,
+                idle_duration=timedelta(),
+            )
+        )
+    return daily_sessions
+
+
+def _hourly_activity(
+    sessions: list[FocusSession], *, range_start: datetime
+) -> list[dict[str, float | int]]:
+    """Split each active session across the local hours it intersects."""
+    buckets = [0.0] * 24
+    for session in sessions:
+        for hour in range(24):
+            hour_start = range_start + timedelta(hours=hour)
+            hour_end = hour_start + timedelta(hours=1)
+            buckets[hour] += _overlap_seconds(
+                session.started_at, session.ended_at, hour_start, hour_end
+            )
+    return [
+        {'hour': hour, 'active_seconds': active_seconds}
+        for hour, active_seconds in enumerate(buckets)
+    ]
+
+
+def _daily_idle_seconds(
+    idle_periods: Sequence[IdlePeriod],
+    *,
+    range_start: datetime,
+    range_end: datetime,
+    now: datetime,
+) -> float:
+    return sum(
+        _overlap_seconds(
+            period.started_at,
+            period.ended_at or now,
+            range_start,
+            range_end,
+        )
+        for period in idle_periods
+    )
+
+
+def _dashboard_date(value: str | None, *, now: datetime) -> date:
+    if value is None:
+        return now.date()
+    try:
+        return date.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError('date must use YYYY-MM-DD format') from error
+
+
 def dashboard_payload(
     store: SQLiteEventStore,
     *,
     now: datetime | None = None,
+    selected_date: date | None = None,
 ) -> dict[str, Any]:
+    current_time = now or datetime.now().astimezone()
+    local_timezone = current_time.tzinfo
+    assert local_timezone is not None
+    day = selected_date or current_time.date()
+    range_start = datetime.combine(day, datetime_time.min, tzinfo=local_timezone)
+    range_end = range_start + timedelta(days=1)
     records = store.read_events()
     idle_periods = store.read_idle_periods()
-    sessions = focus_sessions(
+    all_sessions = focus_sessions(
         records,
-        now=now,
+        now=current_time,
         idle_periods=idle_periods,
     )
+    sessions = _daily_sessions(
+        all_sessions, range_start=range_start, range_end=range_end
+    )
     active_seconds = sum((session.duration.total_seconds() for session in sessions), 0.0)
-    idle_seconds = confirmed_idle_duration(idle_periods, now=now).total_seconds()
+    idle_seconds = _daily_idle_seconds(
+        idle_periods,
+        range_start=range_start,
+        range_end=range_end,
+        now=current_time,
+    )
     context_switch_count = sum(
         1
         for current, following in pairwise(sessions)
@@ -180,6 +277,8 @@ def dashboard_payload(
 
     return {
         'theme': omarchy_theme_payload(),
+        'date': day.isoformat(),
+        'is_today': day == current_time.date(),
         'kpis': {
             'active_seconds': active_seconds,
             'idle_seconds': idle_seconds,
@@ -194,6 +293,23 @@ def dashboard_payload(
             'app': ranked_visits(sessions, include_title=False),
             'app_title': ranked_visits(sessions, include_title=True),
         },
+        'hourly_activity': _hourly_activity(sessions, range_start=range_start),
+        'timeline': [
+            {
+                'app': session.app,
+                'title': session.title,
+                'started_at': session.started_at.isoformat(),
+                'ended_at': session.ended_at.isoformat(),
+                'start_minute': (session.started_at - range_start).total_seconds() / 60,
+                'end_minute': (session.ended_at - range_start).total_seconds() / 60,
+                'duration_seconds': session.duration.total_seconds(),
+                'categories': [
+                    {'id': category.id, 'name': category.name}
+                    for category in store.categories_for(session.app, session.title)
+                ],
+            }
+            for session in sessions
+        ],
         'category_totals': [
             {
                 'id': total.category.id,
@@ -226,7 +342,11 @@ def dashboard_payload(
                 'event': record.event,
                 'data': record.data,
             }
-            for record in records[:50]
+            for record in [
+                record
+                for record in records
+                if range_start <= record.recorded_at.astimezone(local_timezone) < range_end
+            ][:50]
         ],
     }
 
@@ -235,10 +355,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
     server_version = 'ActivityTrackerDashboard/1.0'
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        request = urlparse(self.path)
+        path = request.path
         server = cast(DashboardServer, self.server)
         if path == '/api/dashboard':
-            self._send_json()
+            try:
+                date_value = parse_qs(request.query).get('date', [None])[0]
+                self._send_json_payload(
+                    self._snapshot(
+                        selected_date=_dashboard_date(
+                            date_value, now=datetime.now().astimezone()
+                        )
+                    )
+                )
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
         elif path == '/api/bar-stats':
             self._send_json_payload(bar_stats_payload())
         elif path == '/api/theme':
@@ -331,9 +462,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             raise ValueError('JSON request body is required')
         return json.loads(self.rfile.read(length))
 
-    def _snapshot(self) -> dict[str, Any]:
+    def _snapshot(self, *, selected_date: date | None = None) -> dict[str, Any]:
         with SQLiteEventStore() as store:
-            return dashboard_payload(store)
+            return dashboard_payload(store, selected_date=selected_date)
 
     def _send_frontend_index(self) -> None:
         index = FRONTEND_DIST / 'index.html'
