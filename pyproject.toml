@@ -17,6 +17,7 @@ activity-tracker-bar-stats = "activity_tracker.bar_stats:main"
 activity-tracker-open-dashboard = "activity_tracker.dashboard:open_dashboard_main"
 activity-tracker-config = "activity_tracker.config:main"
 activity-tracker-service = "activity_tracker.service:main"
+activity-tracker-hypridle = "activity_tracker.hypridle:main"
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]

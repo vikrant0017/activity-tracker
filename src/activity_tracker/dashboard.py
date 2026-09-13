@@ -22,7 +22,7 @@ from activity_tracker.config import load_settings
 from activity_tracker.database import SQLiteEventStore
 from activity_tracker.debug import debug
 from activity_tracker.main import listen
-from activity_tracker.stats import FocusSession, focus_sessions
+from activity_tracker.stats import FocusSession, confirmed_idle_duration, focus_sessions
 
 FRONTEND_DIST = Path(__file__).with_name('web') / 'static'
 OMARCHY_THEME_COLORS = Path.home() / '.local' / 'state' / 'omarchy' / 'current' / 'theme' / 'colors.toml'
@@ -162,16 +162,16 @@ def dashboard_payload(
     store: SQLiteEventStore,
     *,
     now: datetime | None = None,
-    idle_after: timedelta | None = None,
 ) -> dict[str, Any]:
     records = store.read_events()
+    idle_periods = store.read_idle_periods()
     sessions = focus_sessions(
         records,
         now=now,
-        idle_after=idle_after or load_settings().idle_after,
+        idle_periods=idle_periods,
     )
     active_seconds = sum((session.duration.total_seconds() for session in sessions), 0.0)
-    idle_seconds = sum((session.idle_duration.total_seconds() for session in sessions), 0.0)
+    idle_seconds = confirmed_idle_duration(idle_periods, now=now).total_seconds()
     context_switch_count = sum(
         1
         for current, following in pairwise(sessions)

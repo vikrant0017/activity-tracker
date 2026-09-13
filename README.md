@@ -91,6 +91,14 @@ npm ci
 npm run dev
 ```
 
+For the Omarchy widget, use one local runner instead. It starts the local collector/API and Vite development server without installing a wheel or enabling a systemd service:
+
+```sh
+./scripts/dev-widget.sh
+```
+
+Keep that process running while developing. The widget opens `http://127.0.0.1:5173`; Vite updates dashboard changes live, the runner restarts the Python API on source changes, and Omarchy hot-reloads saved widget QML files. The local API uses port `8766` by default, avoiding any installed dashboard on `8765`; override it with `ACTIVITY_TRACKER_DEV_API_PORT`.
+
 Vite proxies `/api` and `/events` to the local dashboard API at `http://127.0.0.1:8765`.
 
 ### Development commands
@@ -148,6 +156,23 @@ activity-tracker-config show
 
 The default file contains the idle cutoff plus local dashboard host and port settings.
 
+## Hypridle integration
+
+The tracker can use Hypridle timeout/resume callbacks for confirmed idle time instead of estimating idle time from focus-event gaps. This is opt-in and leaves your existing Hypridle listeners, screensaver, and lock commands unchanged:
+
+```sh
+activity-tracker-hypridle install
+```
+
+It adds a clearly marked listener to `~/.config/hypr/hypridle.conf`. Its timeout defaults to `activity.idle_after_seconds` (300 seconds); choose another threshold with `--timeout` or another config with `--config`:
+
+```sh
+activity-tracker-hypridle install --timeout 150
+activity-tracker-hypridle uninstall
+```
+
+After installation, the dashboard and CLI report **Hypridle idle time**. Only the period after the configured timeout through Hypridle’s resume callback is counted as idle; earlier inactivity is not inferred.
+
 ## Build a distributable wheel
 
 The wheel bundles the dashboard's compiled static assets. From the repository root:
@@ -178,4 +203,4 @@ On first use, the widget downloads the checksum-verified wheel from this project
 
 Apps may have multiple categories. A rule can apply to every title for an application class, or only when the title contains a case-insensitive phrase. Hyprland active-window events do not contain browser URLs, so URL categorization is unavailable.
 
-Focus sessions end when focus changes. Active duration is capped at five minutes by default; remaining gaps are reported as **simple idle time**. This is a lightweight heuristic because Hyprland socket events do not report keyboard or mouse idle state.
+Focus sessions end when focus changes and are split around Hypridle-confirmed idle periods. Those periods are excluded from app and category totals. Install the optional Hypridle listener to report physical idle time; without it, no idle time is inferred from focus-event gaps.

@@ -1,13 +1,9 @@
-import argparse
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from activity_tracker.config import load_settings
-from activity_tracker.database import EventRecord, SQLiteEventStore
-
-DEFAULT_IDLE_AFTER = timedelta(minutes=5)
+from activity_tracker.database import EventRecord, IdlePeriod, SQLiteEventStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,16 +19,10 @@ class FocusSession:
 def focus_sessions(
     records: Sequence[EventRecord],
     *,
-    idle_after: timedelta = DEFAULT_IDLE_AFTER,
+    idle_periods: Sequence[IdlePeriod] = (),
     now: datetime | None = None,
 ) -> list[FocusSession]:
-    """Build app-window sessions from active-window focus events.
-
-    A session ends at the next focus event, but its active duration is capped
-    at `idle_after`. The rest of the gap is counted as simple idle time.
-    """
-    if idle_after <= timedelta():
-        raise ValueError('idle_after must be greater than zero')
+    """Build focused app-window sessions, excluding Hypridle idle intervals."""
 
     focused = sorted(
         (record for record in records if record.event == 'activewindow'),
@@ -42,6 +32,7 @@ def focus_sessions(
         return []
 
     current_time = now or datetime.now(UTC)
+    periods = sorted(idle_periods, key=lambda period: period.started_at)
     sessions = []
     for index, record in enumerate(focused):
         next_start = (
@@ -53,21 +44,48 @@ def focus_sessions(
             continue
 
         observed_end = max(record.recorded_at, next_start)
-        active_end = min(observed_end, record.recorded_at + idle_after)
-        duration = active_end - record.recorded_at
-        idle_duration = observed_end - active_end
-        sessions.append(
-            FocusSession(
-                app=record.app,
-                title=record.title or '',
-                started_at=record.recorded_at,
-                ended_at=active_end,
-                duration=duration,
-                idle_duration=idle_duration,
+        cursor = record.recorded_at
+        for period in periods:
+            period_end = period.ended_at or current_time
+            if period_end <= cursor:
+                continue
+            if period.started_at >= observed_end:
+                break
+            active_end = min(period.started_at, observed_end)
+            if active_end > cursor:
+                sessions.append(
+                    FocusSession(
+                        record.app,
+                        record.title or '',
+                        cursor,
+                        active_end,
+                        active_end - cursor,
+                        timedelta(),
+                    )
+                )
+            cursor = max(cursor, min(period_end, observed_end))
+        if cursor < observed_end:
+            sessions.append(
+                FocusSession(
+                    record.app,
+                    record.title or '',
+                    cursor,
+                    observed_end,
+                    observed_end - cursor,
+                    timedelta(),
+                )
             )
-        )
 
     return sessions
+
+
+def confirmed_idle_duration(idle_periods: Sequence[IdlePeriod], *, now: datetime | None = None) -> timedelta:
+    """Return total time covered by persisted Hypridle periods."""
+    current_time = now or datetime.now(UTC)
+    return sum(
+        (max(timedelta(), (period.ended_at or current_time) - period.started_at) for period in idle_periods),
+        timedelta(),
+    )
 
 
 def format_duration(duration: timedelta) -> str:
@@ -77,7 +95,7 @@ def format_duration(duration: timedelta) -> str:
     return f'{hours:02}:{minutes:02}:{seconds:02}'
 
 
-def print_stats(sessions: Sequence[FocusSession]) -> None:
+def print_stats(sessions: Sequence[FocusSession], *, idle_duration: timedelta = timedelta()) -> None:
     if not sessions:
         print('No active-window events have been recorded yet.')
         return
@@ -104,36 +122,14 @@ def print_stats(sessions: Sequence[FocusSession]) -> None:
         label = f'{app} — {title}' if title else app
         print(f'{format_duration(duration):>8}  {label}')
 
-    idle_time = sum((session.idle_duration for session in sessions), timedelta())
-    print(f'\nSimple idle time: {format_duration(idle_time)}')
-
-
-def positive_seconds(value: str) -> float:
-    seconds = float(value)
-    if seconds <= 0:
-        raise argparse.ArgumentTypeError('must be greater than zero')
-    return seconds
+    print(f'\nHypridle idle time: {format_duration(idle_duration)}')
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description='Show activity statistics from the Hyprland event database.'
-    )
-    parser.add_argument(
-        '--idle-after',
-        type=positive_seconds,
-        default=load_settings().idle_after.total_seconds(),
-        metavar='SECONDS',
-        help='count time after this unfocused-event gap as idle (defaults to activity.idle_after_seconds)',
-    )
-    args = parser.parse_args()
-
     with SQLiteEventStore() as store:
-        sessions = focus_sessions(
-            store.read_events(),
-            idle_after=timedelta(seconds=args.idle_after),
-        )
-    print_stats(sessions)
+        periods = store.read_idle_periods()
+        sessions = focus_sessions(store.read_events(), idle_periods=periods)
+    print_stats(sessions, idle_duration=confirmed_idle_duration(periods))
 
 
 if __name__ == '__main__':

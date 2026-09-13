@@ -334,9 +334,9 @@ function Overview({ dashboard }: { dashboard: Dashboard | null }) {
           >
             <Metric
               icon={MonitorDotIcon}
-              label="Idle time"
+              label="Hypridle idle time"
               value={formatDuration(dashboard.kpis.idle_seconds)}
-              detail="Between active windows"
+              detail="Confirmed after the configured idle timeout"
             />
             <Metric
               icon={TimerResetIcon}

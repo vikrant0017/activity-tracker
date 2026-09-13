@@ -9,7 +9,7 @@ from typing import Protocol, Self
 from activity_tracker.paths import database_path as default_database_path
 
 ACTIVE_WINDOW_EVENT = 'activewindow'
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PREDEFINED_CATEGORY_NAMES = (
     'browser',
     'code editor',
@@ -39,6 +39,13 @@ class EventRecord:
     data: str
     app: str | None
     title: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class IdlePeriod:
+    id: int
+    started_at: datetime
+    ended_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,8 +107,9 @@ class SQLiteEventStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or database_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path, isolation_level=None)
+        self.connection = sqlite3.connect(self.path, isolation_level=None, timeout=5)
         self.connection.execute('PRAGMA foreign_keys = ON')
+        self.connection.execute('PRAGMA busy_timeout = 5000')
         self._create_schema()
 
     def __enter__(self) -> Self:
@@ -163,6 +171,18 @@ class SQLiteEventStore:
                     )
                 ''')
                 self.connection.execute('CREATE INDEX IF NOT EXISTS category_rules_app_idx ON category_rules(app)')
+            if version < 3:
+                self.connection.execute('''
+                    CREATE TABLE IF NOT EXISTS idle_periods (
+                        id INTEGER PRIMARY KEY,
+                        started_at TEXT NOT NULL,
+                        ended_at TEXT,
+                        CHECK (ended_at IS NULL OR ended_at >= started_at)
+                    )
+                ''')
+                self.connection.execute(
+                    'CREATE INDEX IF NOT EXISTS idle_periods_started_at_idx ON idle_periods(started_at)'
+                )
             self.connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
 
     def write_event(
@@ -207,6 +227,67 @@ class SQLiteEventStore:
                 data=row[3],
                 app=row[4],
                 title=row[5],
+            )
+            for row in rows
+        ]
+
+    def start_idle_period(self, started_at: datetime | None = None) -> IdlePeriod:
+        """Start a Hypridle-confirmed period, ignoring duplicate callbacks."""
+        open_period = self.connection.execute('''
+            SELECT id, started_at, ended_at
+            FROM idle_periods
+            WHERE ended_at IS NULL
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+        ''').fetchone()
+        if open_period is not None:
+            return IdlePeriod(
+                id=open_period[0],
+                started_at=datetime.fromisoformat(open_period[1]),
+                ended_at=None,
+            )
+
+        timestamp = (started_at or datetime.now(UTC)).isoformat()
+        cursor = self.connection.execute(
+            'INSERT INTO idle_periods (started_at) VALUES (?)', (timestamp,)
+        )
+        assert cursor.lastrowid is not None
+        return IdlePeriod(id=cursor.lastrowid, started_at=datetime.fromisoformat(timestamp), ended_at=None)
+
+    def end_idle_period(self, ended_at: datetime | None = None) -> bool:
+        """Close the current Hypridle-confirmed period, if one exists."""
+        open_period = self.connection.execute('''
+            SELECT id, started_at
+            FROM idle_periods
+            WHERE ended_at IS NULL
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+        ''').fetchone()
+        if open_period is None:
+            return False
+
+        timestamp = ended_at or datetime.now(UTC)
+        started_at = datetime.fromisoformat(open_period[1])
+        if timestamp < started_at:
+            raise ValueError('idle period cannot end before it starts')
+        self.connection.execute(
+            'UPDATE idle_periods SET ended_at = ? WHERE id = ?',
+            (timestamp.isoformat(), open_period[0]),
+        )
+        return True
+
+    def read_idle_periods(self) -> Sequence[IdlePeriod]:
+        """Return Hypridle-confirmed idle periods from oldest to newest."""
+        rows = self.connection.execute('''
+            SELECT id, started_at, ended_at
+            FROM idle_periods
+            ORDER BY started_at, id
+        ''').fetchall()
+        return [
+            IdlePeriod(
+                id=row[0],
+                started_at=datetime.fromisoformat(row[1]),
+                ended_at=datetime.fromisoformat(row[2]) if row[2] is not None else None,
             )
             for row in rows
         ]
