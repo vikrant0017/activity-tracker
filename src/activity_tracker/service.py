@@ -7,11 +7,11 @@ import sys
 from importlib.resources import files
 from pathlib import Path
 
-SERVICE_NAME = 'activity-tracker.service'
+SERVICE_NAMES = ('activity-tracker.service', 'activity-tracker-coach.service')
 
 
-def service_path() -> Path:
-    return Path.home() / '.config' / 'systemd' / 'user' / SERVICE_NAME
+def service_path(service_name: str = SERVICE_NAMES[0]) -> Path:
+    return Path.home() / '.config' / 'systemd' / 'user' / service_name
 
 
 def collector_executable() -> str:
@@ -24,6 +24,16 @@ def collector_executable() -> str:
     return command
 
 
+def coach_executable() -> str:
+    sibling = Path(sys.executable).with_name('activity-tracker-coach')
+    if sibling.is_file():
+        return str(sibling)
+    command = shutil.which('activity-tracker-coach')
+    if command is None:
+        raise RuntimeError('activity-tracker-coach is not installed or available on PATH')
+    return command
+
+
 def systemctl(*args: str) -> None:
     command = shutil.which('systemctl')
     if command is None:
@@ -32,21 +42,27 @@ def systemctl(*args: str) -> None:
 
 
 def install() -> Path:
-    template = files('activity_tracker').joinpath('resources', 'systemd', SERVICE_NAME).read_text()
     destination = service_path()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(template.replace('@COLLECTOR_COMMAND@', collector_executable()))
+    replacements = {
+        'activity-tracker.service': ('@COLLECTOR_COMMAND@', collector_executable()),
+        'activity-tracker-coach.service': ('@COACH_COMMAND@', coach_executable()),
+    }
+    for service_name, (placeholder, executable) in replacements.items():
+        template = files('activity_tracker').joinpath('resources', 'systemd', service_name).read_text()
+        service_path(service_name).write_text(template.replace(placeholder, executable))
     systemctl('daemon-reload')
-    systemctl('enable', '--now', SERVICE_NAME)
+    systemctl('enable', '--now', *SERVICE_NAMES)
     return destination
 
 
 def uninstall() -> None:
-    path = service_path()
-    if not path.exists():
+    paths = [service_path(service_name) for service_name in SERVICE_NAMES]
+    if not any(path.exists() for path in paths):
         return
-    systemctl('disable', '--now', SERVICE_NAME)
-    path.unlink()
+    systemctl('disable', '--now', *SERVICE_NAMES)
+    for path in paths:
+        path.unlink(missing_ok=True)
     systemctl('daemon-reload')
 
 
@@ -71,12 +87,13 @@ def main() -> None:
             print(service_path())
         else:
             require_installed()
-            systemctl(args.command, SERVICE_NAME)
+            systemctl(args.command, *SERVICE_NAMES)
     except RuntimeError as error:
         parser.exit(1, f'error: {error}\n')
     except subprocess.CalledProcessError as error:
         parser.exit(
             error.returncode,
             'error: systemd could not complete the request. '
-            f'Inspect with `journalctl --user -u {SERVICE_NAME}`.\n',
+            f'Inspect with `journalctl --user -u {SERVICE_NAMES[0]}` or '
+            f'`journalctl --user -u {SERVICE_NAMES[1]}`.\n',
         )

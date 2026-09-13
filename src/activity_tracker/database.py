@@ -9,7 +9,7 @@ from typing import Protocol, Self
 from activity_tracker.paths import database_path as default_database_path
 
 ACTIVE_WINDOW_EVENT = 'activewindow'
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 PREDEFINED_CATEGORY_NAMES = (
     'browser',
     'code editor',
@@ -66,6 +66,13 @@ class CategoryRule:
 class CategoryTotal:
     category: Category
     duration: timedelta
+
+
+@dataclass(frozen=True, slots=True)
+class BreakCoachState:
+    credited_at: datetime | None
+    snoozed_until: datetime | None
+    notification_pending: bool
 
 
 class FocusSessionLike(Protocol):
@@ -183,6 +190,24 @@ class SQLiteEventStore:
                 self.connection.execute(
                     'CREATE INDEX IF NOT EXISTS idle_periods_started_at_idx ON idle_periods(started_at)'
                 )
+            if version < 4:
+                self.connection.execute('''
+                    CREATE TABLE IF NOT EXISTS break_coach_state (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        credited_at TEXT,
+                        snoozed_until TEXT,
+                        notification_pending INTEGER NOT NULL DEFAULT 0 CHECK (notification_pending IN (0, 1))
+                    )
+                ''')
+                self.connection.execute('''
+                    CREATE TABLE IF NOT EXISTS coach_interventions (
+                        id INTEGER PRIMARY KEY,
+                        recorded_at TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        detail TEXT NOT NULL DEFAULT ''
+                    )
+                ''')
+                self.connection.execute('CREATE INDEX IF NOT EXISTS coach_interventions_recorded_at_idx ON coach_interventions(recorded_at)')
             self.connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
 
     def write_event(
@@ -291,6 +316,39 @@ class SQLiteEventStore:
             )
             for row in rows
         ]
+
+    def break_coach_state(self) -> BreakCoachState:
+        row = self.connection.execute('''
+            SELECT credited_at, snoozed_until, notification_pending
+            FROM break_coach_state WHERE id = 1
+        ''').fetchone()
+        if row is None:
+            return BreakCoachState(None, None, False)
+        return BreakCoachState(
+            datetime.fromisoformat(row[0]) if row[0] else None,
+            datetime.fromisoformat(row[1]) if row[1] else None,
+            bool(row[2]),
+        )
+
+    def save_break_coach_state(self, state: BreakCoachState) -> None:
+        self.connection.execute('''
+            INSERT INTO break_coach_state (id, credited_at, snoozed_until, notification_pending)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                credited_at = excluded.credited_at,
+                snoozed_until = excluded.snoozed_until,
+                notification_pending = excluded.notification_pending
+        ''', (
+            state.credited_at.isoformat() if state.credited_at else None,
+            state.snoozed_until.isoformat() if state.snoozed_until else None,
+            state.notification_pending,
+        ))
+
+    def record_coach_intervention(self, kind: str, detail: str = '', *, recorded_at: datetime | None = None) -> None:
+        self.connection.execute(
+            'INSERT INTO coach_interventions (recorded_at, kind, detail) VALUES (?, ?, ?)',
+            ((recorded_at or datetime.now(UTC)).isoformat(), kind, detail),
+        )
 
     def list_known_apps(self) -> list[str]:
         """Return observed application classes alphabetically."""

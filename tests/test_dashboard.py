@@ -1,13 +1,23 @@
 from datetime import UTC, date, datetime, timedelta
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
-from activity_tracker.dashboard import _dashboard_date, dashboard_payload
+from activity_tracker.dashboard import _dashboard_date, dashboard_payload, open_break_guide
 from activity_tracker.database import ACTIVE_WINDOW_EVENT, SQLiteEventStore
 
 
 class DashboardPayloadTests(TestCase):
+    def test_break_guide_uses_development_url_without_starting_production_server(self) -> None:
+        with (
+            patch.dict(os.environ, {'ACTIVITY_TRACKER_GUIDE_URL': 'http://127.0.0.1:5173'}),
+            patch('activity_tracker.dashboard._open_chromium_app') as open_app,
+        ):
+            open_break_guide()
+        open_app.assert_called_once_with('http://127.0.0.1:5173/?break-guide=1')
+
     def test_selected_day_clips_sessions_and_idle_time_at_midnight(self) -> None:
         with TemporaryDirectory() as directory:
             with SQLiteEventStore(Path(directory) / 'events.db') as store:

@@ -64,6 +64,7 @@ import {
   ComboboxValue,
 } from "@/components/ui/combobox"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 
 
 import {
@@ -92,7 +93,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 
-type Page = "daily" | "focus" | "rules" | "activity"
+type Page = "daily" | "focus" | "rules" | "activity" | "coach"
 type Session = { label: string; duration_seconds: number }
 type Visit = { label: string; visit_count: number }
 type Category = { id: number; name: string }
@@ -129,6 +130,18 @@ type Dashboard = {
     average_window_seconds: number
     context_switch_count: number
   }
+  coach: {
+    breaks: {
+      enabled: boolean
+      active_seconds: number
+      active_after_seconds: number
+      break_seconds: number
+      snooze_seconds: number
+      due: boolean
+      snoozed_until: string | null
+      notification_pending: boolean
+    }
+  }
   top_sessions: { app: Session[]; app_title: Session[] }
   top_visits: { app: Visit[]; app_title: Visit[] }
   hourly_activity: Array<{ hour: number; active_seconds: number }>
@@ -142,6 +155,7 @@ type Dashboard = {
 
 const navigation = [
   { id: "daily" as const, label: "Daily analytics", icon: LayoutDashboardIcon },
+  { id: "coach" as const, label: "Break coach", icon: TimerResetIcon },
   { id: "rules" as const, label: "Category rules", icon: FolderCogIcon },
   { id: "activity" as const, label: "Activity log", icon: ClipboardListIcon },
 ]
@@ -501,6 +515,272 @@ function ActivityLog({ dashboard }: { dashboard: Dashboard | null }) {
         </ul>
       </CardContent>
     </Card>
+  )
+}
+
+const breakGuideSteps = [
+  {
+    label: "Breathe slowly",
+    instruction: "Sit comfortably. Inhale for four counts, then exhale gently for six.",
+    share: 0.4,
+    kind: "breathing",
+  },
+  {
+    label: "Roll your shoulders",
+    instruction: "Let your shoulders soften. Roll them up, back, and down at an easy pace.",
+    share: 0.3,
+    kind: "shoulders",
+  },
+  {
+    label: "Reach and rest your eyes",
+    instruction: "Stand if comfortable, reach overhead, then look at something far away and let your eyes rest.",
+    share: 0.3,
+    kind: "reach",
+  },
+] as const
+
+function BreakGuideIllustration({ kind }: { kind: (typeof breakGuideSteps)[number]["kind"] }) {
+  if (kind === "breathing") {
+    return (
+      <svg viewBox="0 0 160 160" className="break-stretch-illustration size-44" aria-hidden="true">
+        <circle cx="80" cy="80" r="64" className="fill-muted" />
+        <circle cx="80" cy="80" r="42" className="break-breathe-ring fill-primary" />
+        <circle cx="80" cy="80" r="16" className="fill-primary-foreground" />
+      </svg>
+    )
+  }
+  if (kind === "shoulders") {
+    return (
+      <svg viewBox="0 0 160 160" className="size-44" aria-hidden="true">
+        <circle cx="80" cy="32" r="17" className="fill-muted-foreground" />
+        <path d="M48 132c5-42 17-62 32-62s27 20 32 62" className="fill-muted" />
+        <path d="M38 82c14-18 30-22 42-12m42 12c-14-18-30-22-42-12" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round" className="text-primary" />
+        <path d="m40 70-3 14 14-3m69-11 3 14-14-3" fill="none" stroke="currentColor" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" className="text-primary" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 160 160" className="break-stretch-illustration size-44" aria-hidden="true">
+      <circle cx="80" cy="38" r="16" className="fill-muted-foreground" />
+      <path d="M80 58v50m0-40L43 40m37 28 37-28M80 108l-25 37m25-37 25 37" fill="none" stroke="currentColor" strokeWidth="9" strokeLinecap="round" className="text-primary" />
+      <path d="M43 40V22m0 0-9 10m9-10 9 10m71 8V22m0 0-9 10m9-10 9 10" fill="none" stroke="currentColor" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" className="text-primary" />
+    </svg>
+  )
+}
+
+function BreakGuide({
+  dashboard,
+  request,
+}: {
+  dashboard: Dashboard | null
+  request: (path: string, method: "POST" | "PUT" | "DELETE", payload?: unknown) => Promise<void>
+}) {
+  const breaks = dashboard?.coach.breaks
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [outcome, setOutcome] = useState<"done" | "snooze" | null>(null)
+  const [selectedExercise, setSelectedExercise] = useState("auto")
+  const isDue = Boolean(breaks?.enabled && (breaks.due || breaks.notification_pending))
+  const duration = breaks?.break_seconds ?? 0
+
+  useEffect(() => {
+    const previousTitle = document.title
+    document.title = "Activity Tracker Break"
+    void fetch("/api/coach/breaks/window", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+    return () => { document.title = previousTitle }
+  }, [])
+
+  useEffect(() => {
+    if (!isDue || outcome || duration <= 0) return
+    const startedAt = Date.now()
+    const update = () => setElapsedSeconds(Math.min(duration, (Date.now() - startedAt) / 1000))
+    update()
+    const interval = window.setInterval(update, 250)
+    return () => window.clearInterval(interval)
+  }, [duration, isDue, outcome])
+
+  const progress = duration > 0 ? Math.min(1, elapsedSeconds / duration) : 0
+  const stepIndex = progress < 0.4 ? 0 : progress < 0.7 ? 1 : 2
+  const step = selectedExercise === "auto" ? breakGuideSteps[stepIndex] : breakGuideSteps[Number(selectedExercise)]
+  const finish = async (action: "done" | "snooze") => {
+    try {
+      await request("/api/coach/breaks/action", "POST", { action })
+      setOutcome(action)
+    } catch {
+      // The regular dashboard remains available as a recovery path if the local API is offline.
+    }
+  }
+
+  return (
+    <main className="mx-auto flex min-h-screen max-w-2xl items-center px-4 py-8" aria-labelledby="break-guide-title">
+      <Card className="w-full">
+        <CardHeader className="items-center text-center">
+          <Badge variant="secondary">Guided break</Badge>
+          <CardTitle id="break-guide-title" className="text-3xl">Take a gentle pause</CardTitle>
+          <CardDescription>Move only within a comfortable range. Stop if anything feels painful or dizzy.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col items-center gap-6 text-center">
+          {!breaks ? (
+            <Skeleton className="h-80 w-full" />
+          ) : outcome ? (
+            <>
+              <div className="flex size-24 items-center justify-center rounded-full bg-muted text-4xl" aria-hidden="true">✓</div>
+              <div className="flex flex-col gap-2">
+                <h2 className="text-xl font-semibold">{outcome === "done" ? "Break recorded" : "Break snoozed"}</h2>
+                <p className="text-muted-foreground">{outcome === "done" ? "Nice work giving yourself a moment away." : "Your next reminder will arrive after the configured snooze."}</p>
+              </div>
+              <Button render={<a href="/" />}>Return to dashboard</Button>
+            </>
+          ) : !isDue ? (
+            <>
+              <div className="flex size-24 items-center justify-center rounded-full bg-muted text-4xl" aria-hidden="true">✓</div>
+              <div className="flex flex-col gap-2"><h2 className="text-xl font-semibold">No break is waiting</h2><p className="text-muted-foreground">This guide is available when your break coach sends a reminder.</p></div>
+              <Button render={<a href="/" />}>Open dashboard</Button>
+            </>
+          ) : (
+            <>
+              <BreakGuideIllustration kind={step.kind} />
+              <ToggleGroup value={[selectedExercise]} onValueChange={(value) => setSelectedExercise(value[0] || "auto")} variant="outline" spacing={1}>
+                <ToggleGroupItem value="auto">Guided</ToggleGroupItem>
+                {breakGuideSteps.map((exercise, index) => <ToggleGroupItem key={exercise.kind} value={String(index)}>{exercise.label}</ToggleGroupItem>)}
+              </ToggleGroup>
+              <div className="flex flex-col gap-2">
+                <p className="font-mono text-3xl tabular-nums">{formatDuration(Math.max(0, duration - elapsedSeconds))}</p>
+                <h2 className="text-2xl font-semibold">{step.label}</h2>
+                <p className="max-w-md text-muted-foreground">{step.instruction}</p>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-muted" role="progressbar" aria-label="Break routine progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
+                <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${progress * 100}%` }} />
+              </div>
+              <p className="text-sm text-muted-foreground" aria-live="polite">{progress >= 1 ? "Your timer is complete. Finish when you are ready." : `Step ${stepIndex + 1} of ${breakGuideSteps.length}`}</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="secondary" onClick={() => setElapsedSeconds(0)}>Restart routine</Button>
+                <Button onClick={() => void finish("done")}>Finish break</Button>
+                <Button variant="outline" onClick={() => void finish("snooze")}>Snooze</Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </main>
+  )
+}
+
+function BreakCoach({
+  dashboard,
+  request,
+}: {
+  dashboard: Dashboard | null
+  request: (path: string, method: "POST" | "PUT" | "DELETE", payload?: unknown) => Promise<void>
+}) {
+  const breaks = dashboard?.coach.breaks
+  if (!breaks) return <Skeleton className="h-72 w-full" />
+  const settingsKey = [
+    breaks.enabled,
+    breaks.active_after_seconds,
+    breaks.break_seconds,
+    breaks.snooze_seconds,
+  ].join(":")
+  return <BreakCoachContent key={settingsKey} breaks={breaks} request={request} />
+}
+
+function BreakCoachContent({
+  breaks,
+  request,
+}: {
+  breaks: Dashboard["coach"]["breaks"]
+  request: (path: string, method: "POST" | "PUT" | "DELETE", payload?: unknown) => Promise<void>
+}) {
+  const [enabled, setEnabled] = useState(breaks.enabled)
+  const [activeAfter, setActiveAfter] = useState(String(breaks.active_after_seconds / 60))
+  const [breakMinutes, setBreakMinutes] = useState(String(breaks.break_seconds / 60))
+  const [snoozeMinutes, setSnoozeMinutes] = useState(String(breaks.snooze_seconds / 60))
+  const [message, setMessage] = useState<string | null>(null)
+
+  const progress = Math.min(100, (breaks.active_seconds / breaks.active_after_seconds) * 100)
+  const submitSettings = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    try {
+      await request("/api/coach/breaks", "PUT", {
+        enabled,
+        active_after_seconds: Number(activeAfter) * 60,
+        break_seconds: Number(breakMinutes) * 60,
+        snooze_seconds: Number(snoozeMinutes) * 60,
+      })
+      setMessage("Break coach settings saved.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to save break coach settings.")
+    }
+  }
+  const action = async (name: "done" | "snooze" | "disable") => {
+    try {
+      await request("/api/coach/breaks/action", "POST", { action: name })
+      setMessage(name === "done" ? "Break recorded. Great work taking time away." : "Break coach updated.")
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to update break coach.")
+    }
+  }
+
+  return (
+    <section className="mx-auto flex max-w-4xl flex-col gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Adaptive break coach</CardTitle>
+          <CardDescription>
+            Gentle prompts are based on focused active time, never time spent idle.
+          </CardDescription>
+          <CardAction>
+            <Badge variant={breaks.enabled ? "default" : "secondary"}>
+              {breaks.enabled ? "Enabled" : "Off"}
+            </Badge>
+          </CardAction>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {breaks.enabled ? (
+            <>
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <span className="text-muted-foreground">Active time until your next break</span>
+                <span className="font-mono tabular-nums">{formatDuration(breaks.active_seconds)} / {formatDuration(breaks.active_after_seconds)}</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-muted" aria-label={`${Math.round(progress)} percent toward next break`}>
+                <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress}%` }} />
+              </div>
+              {breaks.snoozed_until && <Alert><AlertTitle>Reminder snoozed</AlertTitle><AlertDescription>Next prompt after {formatDate(breaks.snoozed_until)}.</AlertDescription></Alert>}
+              {breaks.due && <Alert><AlertTitle>It is time for a break</AlertTitle><AlertDescription className="flex flex-wrap items-center gap-2"><span>Move and rest your eyes for {formatDuration(breaks.break_seconds)}.</span><Button size="sm" onClick={() => void action("done")}>Done</Button><Button size="sm" variant="secondary" onClick={() => void action("snooze")}>Snooze</Button></AlertDescription></Alert>}
+            </>
+          ) : (
+            <Alert><AlertTitle>You are in control</AlertTitle><AlertDescription>Enable the coach when you want gentle desktop and dashboard reminders.</AlertDescription></Alert>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Reminder settings</CardTitle><CardDescription>All settings stay on this device and can be changed at any time.</CardDescription></CardHeader>
+        <CardContent>
+          <form className="flex flex-col gap-4" onSubmit={(event) => void submitSettings(event)}>
+            <FieldGroup>
+              <Field>
+                <FieldLabel htmlFor="break-coach-enabled">Coach status</FieldLabel>
+                <Button id="break-coach-enabled" type="button" variant={enabled ? "default" : "secondary"} onClick={() => setEnabled((value) => !value)}>{enabled ? "Enabled — click to turn off" : "Off — click to enable"}</Button>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="active-after">Active minutes before reminder</FieldLabel>
+                <Input id="active-after" type="number" min="1" step="1" value={activeAfter} onChange={(event) => setActiveAfter(event.target.value)} required />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="break-minutes">Suggested break minutes</FieldLabel>
+                <Input id="break-minutes" type="number" min="1" step="1" value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} required />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="snooze-minutes">Snooze minutes</FieldLabel>
+                <Input id="snooze-minutes" type="number" min="1" step="1" value={snoozeMinutes} onChange={(event) => setSnoozeMinutes(event.target.value)} required />
+              </Field>
+            </FieldGroup>
+            <div className="flex flex-wrap gap-2"><Button type="submit">Save settings</Button>{breaks.enabled && <Button type="button" variant="outline" onClick={() => void action("disable")}>Disable coach</Button>}</div>
+            {message && <p className="text-sm text-muted-foreground" role="status">{message}</p>}
+          </form>
+        </CardContent>
+      </Card>
+    </section>
   )
 }
 
@@ -1157,9 +1437,13 @@ function App() {
     if (!response.ok) throw new Error(await response.text())
     await refreshDashboard()
   }
+  const isBreakGuide = new URLSearchParams(window.location.search).has("break-guide")
+  if (isBreakGuide) return <BreakGuide dashboard={dashboard} request={request} />
   const pageContent =
     page === "daily" ? (
       <Overview dashboard={dashboard} selectedDate={selectedDate} onDateChange={setSelectedDate} />
+    ) : page === "coach" ? (
+      <BreakCoach dashboard={dashboard} request={request} />
     ) : page === "focus" ? (
       <Focus dashboard={dashboard} />
     ) : page === "activity" ? (

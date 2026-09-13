@@ -1,6 +1,7 @@
 import argparse
 import json
 import mimetypes
+import os
 import re
 import shutil
 import subprocess
@@ -19,13 +20,16 @@ from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
 from activity_tracker.bar_stats import bar_stats_payload
-from activity_tracker.config import load_settings
+from activity_tracker.coach import apply_action as apply_break_action
+from activity_tracker.coach import snapshot as break_coach_snapshot
+from activity_tracker.config import Settings, load_settings, write_settings
 from activity_tracker.database import IdlePeriod, SQLiteEventStore
 from activity_tracker.debug import debug
 from activity_tracker.main import listen
 from activity_tracker.stats import FocusSession, focus_sessions
 
 FRONTEND_DIST = Path(__file__).with_name('web') / 'static'
+LOCAL_DASHBOARD_URL = 'http://127.0.0.1:8765'
 OMARCHY_THEME_COLORS = Path.home() / '.local' / 'state' / 'omarchy' / 'current' / 'theme' / 'colors.toml'
 CSS_COLOR = re.compile(r'^(?:#[0-9a-fA-F]{3,8}|(?:rgb|hsl)a?\([0-9.%\s,+-]+\)|[a-zA-Z]+)$')
 
@@ -285,6 +289,9 @@ def dashboard_payload(
             'average_window_seconds': active_seconds / len(sessions) if sessions else 0.0,
             'context_switch_count': context_switch_count,
         },
+        'coach': {
+            'breaks': break_coach_snapshot(store, load_settings(), now=current_time)
+        },
         'top_sessions': {
             'app': ranked_sessions(sessions, include_title=False),
             'app_title': ranked_sessions(sessions, include_title=True),
@@ -351,6 +358,28 @@ def dashboard_payload(
     }
 
 
+def _break_settings_from_payload(payload: dict[str, Any], current: Settings) -> Settings:
+    enabled = payload['enabled']
+    if not isinstance(enabled, bool):
+        raise TypeError('enabled must be true or false')
+
+    def seconds(name: str) -> timedelta:
+        value = payload[name]
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f'{name} must be a positive number')
+        return timedelta(seconds=value)
+
+    return Settings(
+        idle_after=current.idle_after,
+        dashboard_host=current.dashboard_host,
+        dashboard_port=current.dashboard_port,
+        break_coach_enabled=enabled,
+        break_active_after=seconds('active_after_seconds'),
+        break_duration=seconds('break_seconds'),
+        break_snooze=seconds('snooze_seconds'),
+    )
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = 'ActivityTrackerDashboard/1.0'
 
@@ -400,6 +429,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             else None
                         ),
                     )
+                elif path == '/api/coach/breaks/action':
+                    apply_break_action(store, str(payload['action']), load_settings())
+                elif path == '/api/coach/breaks/window':
+                    fullscreen_break_guide_window()
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -411,6 +444,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         path = urlparse(self.path).path
+        if path == '/api/coach/breaks':
+            try:
+                payload = self._read_json()
+                settings = _break_settings_from_payload(payload, load_settings())
+                write_settings(settings)
+                with SQLiteEventStore() as store:
+                    response = dashboard_payload(store)
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            self._send_json_payload(response)
+            return
         prefix = '/api/category-rules/'
         if not path.startswith(prefix):
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -594,14 +639,13 @@ def dashboard_executable() -> str | None:
     return shutil.which('activity-tracker-dashboard')
 
 
-def open_dashboard() -> None:
-    """Start the local dashboard when needed, then open it in the browser."""
+def _ensure_dashboard_running() -> None:
+    """Start the installed local dashboard if it is not already available."""
     import urllib.error
     import urllib.request
 
-    dashboard_url = 'http://127.0.0.1:8765'
     try:
-        with urllib.request.urlopen(f'{dashboard_url}/api/dashboard', timeout=1):
+        with urllib.request.urlopen(f'{LOCAL_DASHBOARD_URL}/api/dashboard', timeout=1):
             pass
     except (OSError, urllib.error.URLError):
         dashboard_command = dashboard_executable()
@@ -616,17 +660,60 @@ def open_dashboard() -> None:
         )
         for _ in range(10):
             try:
-                with urllib.request.urlopen(f'{dashboard_url}/api/dashboard', timeout=1):
+                with urllib.request.urlopen(f'{LOCAL_DASHBOARD_URL}/api/dashboard', timeout=1):
                     break
             except (OSError, urllib.error.URLError):
                 time.sleep(0.2)
         else:
             raise RuntimeError('dashboard did not start on http://127.0.0.1:8765')
 
+
+def _open_dashboard_url(url: str, *, ensure_running: bool = True) -> None:
+    if ensure_running:
+        _ensure_dashboard_running()
     browser_command = shutil.which('xdg-open')
     if browser_command is None:
         raise RuntimeError('xdg-open is not available on PATH')
-    subprocess.run([browser_command, dashboard_url], check=True)
+    subprocess.run([browser_command, url], check=True)
+
+
+def _open_chromium_app(url: str) -> None:
+    chromium = shutil.which('chromium') or shutil.which('chromium-browser')
+    if chromium is None:
+        raise RuntimeError('chromium is not available on PATH')
+    subprocess.Popen([chromium, f'--app={url}'], start_new_session=True)
+
+
+def open_dashboard() -> None:
+    """Start the local dashboard when needed, then open it in the browser."""
+    _open_dashboard_url(LOCAL_DASHBOARD_URL)
+
+
+def open_break_guide() -> None:
+    """Open the local, guided break view in the user's default browser."""
+    guide_base_url = os.environ.get('ACTIVITY_TRACKER_GUIDE_URL', LOCAL_DASHBOARD_URL)
+    if guide_base_url == LOCAL_DASHBOARD_URL:
+        _ensure_dashboard_running()
+    _open_chromium_app(f'{guide_base_url.rstrip('/')}/?break-guide=1')
+
+
+def fullscreen_break_guide_window() -> None:
+    """Make only the titled Chromium guide window a pinned fullscreen overlay."""
+    hyprctl = shutil.which('hyprctl')
+    if hyprctl is None:
+        return
+    try:
+        active = json.loads(subprocess.run(
+            [hyprctl, 'activewindow', '-j'], check=True, capture_output=True, text=True, timeout=2
+        ).stdout)
+        if active.get('title') != 'Activity Tracker Break' or active.get('fullscreen'):
+            return
+        subprocess.run(
+            [hyprctl, 'dispatch', 'hl.dsp.window.fullscreen({ mode = "fullscreen" })'],
+            check=True, timeout=2,
+        )
+    except (OSError, KeyError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        debug(f'Break guide window setup failed: {error}')
 
 
 def open_dashboard_main() -> None:
